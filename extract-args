@@ -382,9 +382,9 @@ function USAGE {
 		    parameters are expected, to specify the equivalence of short and long forms
 		    of an option, to specify a POSIX extended regular expression to which
 		    parameters must conform, and outputs both an associative array that flags
-		    used options while specifying their parameters and a sequential array containing the
-		    command parameters. It cannot deal with optional parameters to options,
-		    unlike getopt.
+		    used options while specifying their parameters and a sequential array
+		    containing the command parameters. It cannot deal with optional parameters
+		    to options, unlike getopt.
 
 		    See '--opts' in OPTIONS for a description of how to format the option
 		    specifications; see '--range' for a description of how to format the command
@@ -400,7 +400,7 @@ function USAGE {
 		    In other words, no option can appear in more than one of these
 		    interdependency lists.
 
-			If the special "help flag" (see INPUT) is used, then the restrictions
+		    If the special "help flag" (see INPUT) is used, then the restrictions
 		    regarding mandatory options and the number of parameters are ignored. E.g.,
 		    the script will exit successfully when seeing said flag in the input even if
 		    it doesn't have the right number of parameters. This special behavior cannot
@@ -420,7 +420,7 @@ function USAGE {
 
 		    Note that, as mentioned above, this implies you MUST source this script
 		    instead of running it (i.e., 'source extract-args "${args[@]}"' or
-			'. extract-args "${args[@]}"') to view this output. Otherwise, the only form
+		    '. extract-args "${args[@]}"') to view this output. Otherwise, the only form
 		    of output will be the exit status.
 
 		    The terminology (option, parameter, argument, etc.) is non-standard and
@@ -648,7 +648,9 @@ function USAGE {
 		    EXAMPLE
 		        This command's argument format would be passed as:
 
-		        . extract-args --opts='o~opts=;n=;O=/[A-Z][[:alnum:]_]*/;P=/[A-Z][[:alnum:]_]*/;h~help;!-' -n '-' -- ${input}
+		        name='[A-Z][[:alnum:]]*'
+		        optstr='o~opts=;n=;O=/'"$name"'/;P=/'"$name"'/;h~help;!-'
+		        . extract-args --opts="$optstr" -n '-' -- ${input}
 
 		        where "${input}" is the set of positional arguments to process; in
 		        typical typical applications, this will just be "$@".
