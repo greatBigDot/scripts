@@ -1,0 +1,3 @@
+#!/bin/bash
+set -EeufC -o pipefail
+shopt -s extglob lastpipe

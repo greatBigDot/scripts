@@ -1,0 +1,841 @@
+#!/bin/bash
+BASH_OPT_SET_START="$(shopt -op)"
+BASH_OPT_SHOPT_START="$(shopt -p)"
+BASH_TRAP_START="$(trap -p)"
+
+. prelude    # See /usr/bin/prelude
+set +H    # Just in case
+
+# NOTE: pretty sure that as it's written, it will flop on bash versions <4.4
+# cause of the weird ways empty arrays were dealt with while 'nounset' was
+# activated.
+
+# NOTE: The below is probably the least elegant tangle of kludges calling itself
+# a program that I've ever written.
+# Proceed with caution, and for the love of god, future self, fix this atrocity.
+
+
+# About the { false; return $?; } thing... don't ask. Trust me, you don't want
+# to know.
+#     Actually, I kinda do! The hell were you thinking, me from a week ago!? I
+#     mean, this can't possibly be right, but you recognize that it's absurdly
+#     dumb, so maybe it is.
+#     All I remember is getting a headache trying to make it work and that the
+#     solution was dumb, but I don't remember any details. Goddamnit, couldn't
+#     you at least have given me a hint?
+#         Okay, so it looks like past self was right, but I don't have the
+#         slightest idea why. set -e apparently doesn't do what I thought,
+#         because the script just keeps on running after a fail command is
+#         called.
+#             I've figured out something: 'set -e' doesn't make the script
+#             cancel upon 'false && :'. No, that's not a typo; try it yourself.
+#             yourself. idk why, though; I guess I really don't understand what
+#             'set -e' is about.
+# Ok, finally figured it all out! Thanks for all your help, past selves 2-4 (and no thanks to you, past self 1, since you never knew what you were talking about in the first place). The odd behavior is a consequence of two rules of the 'errexit' shell option:
+# * In a conditional command list or in a '!'-negated pipeline, only the last command in the list can be affected by the option is question. **NOT** the last command executed, the last command in the list. Hence, false && false, despite exiting with error code 1, does not cause 'errexit' to take effect. The first false is ignored by the option since it isn't the last command in the command list; the second false is never executed and so its exit status is never read.
+# * Even more counterintuitively, in a context where 'errexit' is ignored, all function calls likewise ignore it. So, if I call this script as 'extract-args [whatever] || error', then the script will be executed as if 'errexit' was never set---even when 'set -e' is also called within that script itself! As far as I can tell, this behavior only occurs when a script is sourced.
+# As far as I can tell, there is no way to disable or override any of this, though there may be partial workarounds involving 'trap'.
+# Sooner or later, I should rewrite all this to reflect bash's actual capabilities instead of the hodgepodge of kludges it currently is.
+
+main () {
+	trap 'internal-fail;return $?' ERR HUP INT KILL TERM
+	# set -E    # maybe? idk
+	# TODO: Make cloned options fail properly (e.g. if an option is used twice
+	# in the input).
+	# TODO: Make options named help that aren't help flags work properly.
+
+	# First step: process extract-args's own options.
+	# Since I'm trying to make a clean break from getopt/getopts, I'll do this
+	# manually.
+
+	local optstr=''
+	local num='0'
+	local positional=( )
+
+	declare -A opts
+	local specs=( )
+	local arg
+	local conditional=( )
+	local mandatory=( )
+
+	local help_flag=0
+
+	local param
+	local options params
+	# local OPTIONS=( )
+	local name_regex='^(([A-Z_][a-zA-Z_0-9]*)|)$'
+
+	[ ! -v 'OPTIONS' ] && options='OPTIONS' || options=''
+	[ ! -v 'PARAMS' ] && params='PARAMS' || params=''
+
+	(( "$#" > 0 )) || { fail || return $?; }
+
+	while (( "$#" > 0 )); do
+		case "$1" in
+			-o|--opts )
+				[ -n "${2+_}" ] || { fail || return $?; }
+				optstr="$2"
+				shift 2 ;;
+			--opts=*)
+				optstr="${1#--opts=}"
+				shift ;;
+			-n )
+				[ -n "${2+_}" ] || { fail || return $?; }
+				[[ $2 =~ ^(([0-9]*-[0-9]*)|([0-9]+))(=.*)?$ ]] || { opt-fail || return $?; }
+				num='0'"$2"    # should be fine
+				! [[ ${num%%=*} =~ '-' ]] && num="${num%%=*}"'-'"${num}"    # ditto
+				if [[ $num =~ '=' ]]; then
+					local err=0; [[ '' =~ "${num#*=}" ]] || err=$?
+					(( $err <= 1 )) || { opt-fail || return $?; }; unset err
+				fi
+				shift 2 ;;
+			-O )    # TODO: Check for clashes with special names (e.g. PATH, _).
+				[ -n "${2+_}" ] && [ ! "${2}" = '--' ] || { fail || return $?; }
+				[[ "$2" =~ ${name_regex} ]] || { opt-fail || return $?; }
+				options="$2"
+				shift 2 ;;
+			-P )    # TODO: Check for clashes with special names (e.g. PATH, _).
+				[[ "$2" =~ ${name_regex} ]] || { opt-fail || return $?; }
+				params="$2"
+				shift 2 ;;
+			-h*|--help )
+				printf '%s\n' "$(USAGE)";return 0 ;;
+			-- )
+				# Note that this is mandatory (unless '--help' is used).
+				shift
+				break ;;
+			* )
+				{ fail || return $?; } ;;
+		esac
+	done
+
+	if [ -z "${options}" ];then
+		declare -n options=OPTIONS
+		declare -A  "${!options}"
+	else
+		declare -n options
+		declare -Ag "${!options}"
+	fi
+	if [ -z "${params}" ];then
+		declare -n  params=PARAMS
+		declare -a  "${!params}"
+	else
+		declare -n  params
+		declare -ag "${!params}"
+	fi
+
+	local opt_regex='([[:alnum:]][[:alnum:]-]*|[[:alnum:]]~[[:alnum:]][[:alnum:]-]+|-)'
+	local optspec_regex='(!?'"${opt_regex}"'=(/(.*[^\\])?/)?|'"${opt_regex}"'((\|'"${opt_regex}"')*|(,'"${opt_regex}"')*))'
+	local optstr_regex='(('"${optspec_regex}"'(;'"${optspec_regex}"')*)?)'
+	local err=0
+	[[ "$optstr" =~ ^${optstr_regex}$ ]] || err=$?
+	case $err in
+		0 ) ;;
+		1 ) opt-fail || return $? ;;
+		2 ) internal-fail || return $? ;;
+	esac;unset err
+
+	# 'opts' is an associative array; it holds this data:
+	#   * option name and synonym (if applicable);
+	#   * whether or not there is a parameter, and if so what regex dictates it.
+	# 'specs' is a linear array; it holds this data:
+	#   * option name and synonym (if applicable);
+	#   * conditional info.
+	# Neither holds info about mandatoriness; that's controlled by the linear
+	# array 'mandatory'.
+
+	local err _regex opt char regex _optstr="${optstr}"
+	while [ -n "${optstr}" ];do
+		char="$(printf '%s' "${optstr}" | grep -zo -- '[;,|=]' | cut -c1)" || :
+		IFS=';,|=' read -rd '' -- opt optstr < <(printf '%s' "${optstr}")  || :
+		if [ "${char}" == '=' ]; then
+			if [ "${optstr:0:1}" != '/' ]; then
+				opts+=( ["${opt#\!}"]='//' )
+				optstr="${optstr:1}"
+			else
+				regex="$(printf '%s' "${optstr}" | grep -zoE -- '^/[^\\/]*(\\.[^\\/]*)*/' | tr -d '\000')"
+				_regex="${regex%/}"; _regex="${_regex#/}"
+				err=0; [[ '' =~ ${_regex} ]] || err=$?
+				(( err <= 1 )) || { opt-fail || return $?; }
+				opts+=( ["${opt#\!}"]="${regex}" )
+				optstr="${optstr:${#regex}+1}"
+			fi
+		else
+			opts+=( ["${opt#\!}"]='' )
+		fi
+		[ "${opt:0:1}" == '!' ] && mandatory+=( "${opt#\!}" )
+	done; unset opt regex char err _regex; optstr="${_optstr}"; unset _optstr
+
+	IFS=';' read -r -d '' -a specs < <(printf '%s' "${optstr//\!/}" | sed -Ez -- 's/=(\/[^\\\/]*(\\.[^\\\/]*)*\/)?//g') || :
+
+	local param regex arg opt
+	while (( "$#" > 0 )); do
+		case "$1" in
+			-- ) shift; break ;;
+			-?=* | --? | --?=* ) invalid-input || return $? ;;
+			--*=* )
+			    param="${1#*=}" ;;
+			--*  | -? ) ;;
+			-?* )
+				local i expand=( )
+				for (( i=1; i <= "${#1}"-1; i++ )); do
+					expand+=( '-'"${1:$i:1}" )
+				done
+				set -- "${expand[@]}" "${@:2}" ;;
+			* ) break ;;   # This (correctly) includes '-'.
+		esac
+		arg="${1##-?(-)}"; arg="${arg%%=*}"
+		local match=0
+		for opt in "${!opts[@]}"; do
+			if [ "${opt#?~}" == "$arg" ] || [ "${opt%%~*}" == "$arg" ]; then
+				match=1; break
+			fi
+		done
+		(( match )) || { invalid-input; return $?; };unset match
+		unset match
+		regex="${opts[$opt]}"
+
+		# Time to remove unwanted entries. This makes ','-groups work and fights
+		# half the battle for making '/'-groups work.
+		local k split_specs=( )
+		for k in "${!specs[@]}"; do
+			# This should work, since the specification is valid (e.g. doesn't
+			# contain both a ',' and a '/' in a single group).
+			if [[ ${specs[$k]} =~ (^|[|,])${opt}([|,]|$) ]]; then
+				[[ "${specs[$k]}" =~ ^(h~)?help$ ]] && help_flag=1
+				IFS='/,' read -rd '' -a split_specs < <(printf '%s' "${specs[$k]}") || :
+				local split_spec
+				for split_spec in "${split_specs[@]}"; do
+					unset opts["${split_spec}"]
+				done; unset split_spec
+				unset specs[$k]
+			fi
+		done; unset k split_specs
+		local m
+		for m in "${!mandatory[@]}";do
+			[ "${mandatory[$m]}" == "${opt}" ] && { unset mandatory[$m];break; }
+		done
+
+		# Now time to worry about the parameters...
+		# Remember, the regex contains bounding '/''s; if it's empty, then there
+		# is no parameter. See up above where the 'opts' array was set.
+
+		if { [ -z "${regex}" ] && [ -v param ]; } || \
+			   { [ -n "${regex}" ] && [ ! -v param ] && (( ${#} == 1 )); };then
+			invalid-input || return $?
+		elif [ -n "${regex}" ] && [ ! -v param ]; then
+			param="$2";	shift 1    # it's either this or make a var for the shift size.
+		fi
+		if [ -n "${regex}" ]; then
+			regex="${regex%/}";regex="${regex#/}"
+			[[ ${param} =~ ${regex} ]] || { invalid-input || return $?; }
+		fi
+
+		# If the script has gotten this far, then everything is golden for this
+		# argument. Now we just need to set up the output.
+		param="${param-}"
+		options["${opt#?~}"]="$param"
+	    options["${opt%~*}"]="$param"
+
+		# Now we're done--with this argument, at least. Onto the next:
+		shift 1
+		unset param regex arg opt; local param regex arg opt
+	done
+
+	# Great, all the option arguments have been processed without fail. Now all
+	# that remains is to make sure every option that was supposed to get called
+	# was called, and to process the parameter arguments.
+	if ! (( $help_flag ));then
+		# First things first (remember, at this point we know that the option names
+		# are valid (e.g., no '/''s)):
+		! (( "${#mandatory[@]}" )) && ! [[ "${specs[*]}" =~ \| ]] || \
+				{ invalid-input || return $?; }
+
+		# Now the command parameters.
+		# Remember that there is definitely a hyphen somewhere; see above.
+		local min max regex
+		IFS='-=' read -rd '' -- min max regex 0< <(printf '%s' "$num") || :
+		(( $# >= ${min} )) && { [ -z "$max" ] || (( $# <= ${max} )); } || \
+			{ invalid-input || return $?; }; unset min max
+
+		# also this:
+		if [ -n "${regex-}" ]; then
+			local p
+			for p in "$@";do
+				[[ "$p" =~ ${regex} ]] || { invalid-input || return $?; }
+			done; unset p
+		fi
+		unset regex
+	fi
+
+	# The input is perfect! Just need to finish setting up the output:
+	params=( "${@}" )
+
+	# And then some cleanup:
+	readonly "${!options}" "${!params}"
+	unset -n options params
+
+	# TODO:
+	#     * Clean up the variables.
+	#     * Do something about multiple copies of an option.
+	#     * Properly address possibility of malformed option specs.
+	#     * Make a (-v|--verbose) flag for debugging; make corresponding failure
+	#         messages more useful.
+	#     * Restructure in a non-insane way.
+	#         * UPDATE--is now much less insane, i think.
+}
+
+# TODO: make sure these don't overwrite
+function invalid-input {
+	case "${1-}" in
+		0  ) echo "Option '$2' not found." 1>&2 ;;
+		1  ) echo "Option '$2' requires a param." 1>&2 ;;
+		2  ) echo "Option '$2' should not have a param." 1>&2;;
+		3  ) echo -n "Mandatory option skipped" 1>&2
+			 [ -n "${2+_}" ] && echo ": '$2'" 1>&2 || echo '.' ;;
+		-1 ) echo 'Wrong number of params.';;
+		* );;
+	esac
+	printf -- '%s' 'INVALID INPUT: ' 1>&2; caller 1>&2
+	unset options params
+	unset -n options params
+	return 1
+}
+
+function opt-fail {
+	echo "ERROR: Improperly formatted option string, variable name, or range" 1>&2
+	echo "specification. Use '--help' for help." 1>&2
+	caller 1>&2
+	printf '<%s>\n' "${optstr_regex}"
+	unset options params
+	unset -n options params
+	return 2
+}
+
+function fail {
+	echo "$(BRIEF-USAGE)" 1>&2
+	unset options params
+	unset -n options params
+	return 3
+}
+
+function internal-fail {
+	cat <<- 'EOF' 1>&2
+		ERROR: Internal failure in extract-args!
+
+		If you are reading this, then the option parser 'extract-args' isn't working
+		properly. You'll have to fix it. Good luck!
+	EOF
+	caller 1>&2
+	unset options params
+	unset -n options params
+	return 4
+}
+
+
+################################################################################
+
+# These are indented to 88 lines for a reason. '<<-' (unlike '<<') strips
+# leading tabs so that the here-doc can be naturally aligned in the script
+# without affecting the here-doc itself. Since I want the help pages to be 80
+# columns wide upon output, they need to be  80+(2*tab-width)  here.
+# Use emacs's 'whitespace-mode' to see what's going on here.
+
+function BRIEF-USAGE {
+	cat <<- 'EOF'
+		SUMMARY
+		    extract-args - Parse a set of command arguments.
+		    [MOSTLY DONE; BE CAREFUL WITH IDENTICALLY NAMED OPTIONS USED MORE THAN ONCE,
+		    OPTIONS NAMED 'HELP' THAT AREN'T HELP FLAGS, AND MALFORMED OPTION
+		    SPECIFICATIONS.]
+
+		USAGE
+		    extract-args [(-o | --opts) OPTSTR] [-n RANGE]
+		                 [-O OPT_ARR] [-P PARAM_ARR] -- <args>...
+		    extract-args (-h | --help)
+	EOF
+}
+
+function USAGE {
+	cat <<- 'EOF'
+		NAME
+		    extract-args - Parse a set of command arguments.
+		    [MOSTLY DONE; BE CAREFUL WITH IDENTICALLY NAMED OPTIONS USED MORE THAN ONCE,
+		    OPTIONS NAMED 'HELP' THAT AREN'T HELP FLAGS, AND MALFORMED OPTION
+		    SPECIFICATIONS.]
+
+		SYNOPSIS
+		    extract-args [(-o | --opts) OPTSTR] [-n RANGE]
+		                 [-O OPTARR] [-P PRMARR] -- <args>...
+		    extract-args (-h | --help)
+
+		DESCRIPTION
+		    Parse a set of command arguments.
+
+		    Note that this MUST be sourced instead of normally executed to access output
+		    beyond the exit status; the reasons for this are below.
+
+		    Neither 'getopt' nor 'getopts' have fully suited my needs, so here's a
+		    slightly more featured, much more buggy version. Specifically, in addition
+		    to the features that getopt provides, extract-args allows one to specify (to
+		    some extent) the interdependencies of the options, to specify how many
+		    parameters are expected, to specify the equivalence of short and long forms
+		    of an option, to specify a POSIX extended regular expression to which
+		    parameters must conform, and outputs both an associative array that flags
+		    used options while specifying their parameters and a sequential array containing the
+		    command parameters. It cannot deal with optional parameters to options,
+		    unlike getopt.
+
+		    See '--opts' in OPTIONS for a description of how to format the option
+		    specifications; see '--range' for a description of how to format the command
+		    parameter specification.
+
+		    The option interdependencies take on two forms--you can say that exactly one
+		    member of a list of options is allowed, and you can say that no more than
+		    one of a list of options is allowed. This limits the expressivity of the
+		    script, but it also deters the use of absurdly convoluted option
+		    constraints. Most importantly, though, it made this script easier to
+		    program. Perhaps a future version of this will allow more complex
+		    interdependencies. Note also that these these restrcitions cannot overlap.
+		    In other words, no option can appear in more than one of these
+		    interdependency lists.
+
+			If the special "help flag" (see INPUT) is used, then the restrictions
+		    regarding mandatory options and the number of parameters are ignored. E.g.,
+		    the script will exit successfully when seeing said flag in the input even if
+		    it doesn't have the right number of parameters. This special behavior cannot
+		    be disabled; see LIMITATIONS.
+
+		    Bash functions don't actually return values (other than the exit status);
+		    all they can do is write a string to standard output. Consequently, to
+		    output any data more complex than a string, global variables are used. This
+		    function "outputs" an associaitive array containing all option information
+		    and a sequential array with all the command parameters (see OUTPUT for
+		    details). These arrays are stored in global variables whose names are
+		    specified by the '-O' and '-P' options (see OPTIONS); if theses aren't used,
+		    then the associative array defaults to the global variable 'OPTIONS' (iff it
+		    is unset) and the sequential array to 'PARAMS' (iff it is unset). If a
+		    name is empty, or not given and the default is set, then the corresponding
+		    global array will not be set.
+
+		    Note that, as mentioned above, this implies you MUST source this script
+		    instead of running it (i.e., 'source extract-args "${args[@]}"' or
+			'. extract-args "${args[@]}"') to view this output. Otherwise, the only form
+		    of output will be the exit status.
+
+		    The terminology (option, parameter, argument, etc.) is non-standard and
+		    confusing; for the definitions used in this help page, see GLOSSARY.
+
+		    There are several things this script cannot do; see LIMITATIONS.
+
+		    OPTIONS
+		        -o, --opts OPTSTR    A list of which options to look for and their
+		                             properties.
+
+		                             Normal option names are nonempty strings of
+		                             alphanumeric characters and hyphens ('-') that do
+		                             not begin with a hyphen; additionally, there is the
+		                             implied special option named '-'.
+
+		                             Option names have several allowed modifiers
+		                             dictating their behavior. If two normal option
+		                             names, the first short and the second long, are
+		                             connected by a tilde ('~'), they are treated as a
+		                             single unit with respect to behavioral
+		                             modifications and the output option array (see
+		                             OUTPUT). If any option name is preceded by an
+		                             exclamation mark ('!'), then the "option" is
+		                             mandatory. If a normal option name is followed by
+		                             an equals sign ('='), then it has a mandatory
+		                             parameter. Immediately following this, there may be
+		                             a regular expression, delimited by slashes ('/').
+		                             An absent regular expression is implied to be an
+		                             empty regular expression.
+
+		                             An 'option list' is either an option name (possibly
+		                             with modifiers) as described above, or a non-empty
+		                             series of non-mandatory option names (possibly with
+		                             non-'!' modifiers) separated by either commas (',')
+		                             or bars ('|'). A comma list indicates that no more
+		                             than one of the options may appear; a bar list
+		                             indicates that exactly one of them must appear. A
+		                             list cannot include both a comma seperator and a
+		                             bar seperator.
+
+		                             An option string is a series of option lists
+		                             seperated by semicolons (';'). No option name may
+		                             appear twice. An option list matching the regex
+		                             '(h=)?help' is known as a "help flag"; if a help
+		                             flag is used, then the mandatory option and list
+		                             conditions ('!''s and '|''s) do not have to be
+		                             obeyed.
+
+		                             [default: '']
+
+		        -n RANGE             The number of positional parameters to accept,
+		                             specified as a range of nonegative extended
+		                             integers, with an optional regular expression for
+		                             all parameters to satisfy.
+
+		                             The bounds are separated by a hyphen ('-') and are
+		                             (if finite) both inclusive. If the lower-bound
+		                             isn't set, it is assumed to be 0; if the upper
+		                             bound isn't set, it is assumed to be positive
+		                             infinity (exclusive). If a single number with no
+		                             hyphens is present, then the number is assumed to
+		                             represent both bounds. (If neither a lower bound
+		                             nor an upper bound nor a hyphen appear, then an
+		                             error occurs (see EXIT STATUS).)
+
+		                             This range is optionally followed by an equals sign
+		                             ('=') and a (non-delimited) regular expression that
+		                             all command parameters must obey. If absent, the
+		                             empty regex is assumed to be empty.
+
+		                             If the special "help flag" option (see INPUT) is
+		                             used, this specification does not have to be
+		                             obeyed.
+
+		                             [default: '0']
+
+		        -O OPTARR            The name of the global output linked array
+		                             containing information about the options (see
+		                             OUTPUT), or the empty string to not "output" that
+		                             array. The name must be a valid non-special bash
+		                             identifier beginning with a capital letter. I.e.,
+		                             it must satisfy the regex /[A-Z][a-zA-Z0-9_]*/.
+		                             Note that this will overwrite the variable. The
+		                             array is made readonly after its values are set.
+		                             Becuase of how bash handles scope, the script must
+		                             be sourced for any of this to apply in the caller's
+		                             environment.
+
+		                             [default: 'OPTIONS' iff unset; '' otherwise]
+
+		        -P PRMARR            The name of the global output linked array
+		                             containing information about the options (see
+		                             OUTPUT), or the empty string to not "output" that
+		                             array. The name must be a valid non-special bash
+		                             identifier beginning with a capital letter. I.e.,
+		                             it must satisfy the regex /[A-Z][a-zA-Z0-9_]*/.
+		                             Note that this will overwrite the variable. The
+		                             array is made readonly after its values are set.
+		                             Becuase of how bash handles scope, the script must
+		                             be sourced for any of this to apply in the caller's
+		                             environment.
+
+		                             [default: 'PARAMS' iff unset; '' otherwise]
+
+		        -h, --help           Display this help message.
+
+		        --                   Separates options and their parameters from command
+		                             parameters. THIS IS MANDATORY!!
+
+		    INPUT
+		        In a typical application, this script will be sourced from inside
+		        another bash script, and its command parameters will be "$@". That is,
+		        it will be every argument to the command, listed sequentially and
+		        seperately. To be more specific, an "argument" in the context of this
+		        script is understood and parsed as either:
+
+		        (1a) a valid short option name with leading hyphen;
+		        (1b) a valid long option name with leading hyphens;
+		        (2)  a contiguous sequence of valid short normal option names, all
+		             parameterless except possibly the final one, with leading hyphen;
+		        (3)  a valid option parameter (after an applicable argument of type
+		             (1a), (1b), or (2));
+		        (4)  a valid long option name/option parameter pair, connected by an
+		             equals sign ('=') and with leading hyphens; or
+		        (5)  a valid command parameter.
+
+		        A "valid option" refers to one that is allowed by option string (see
+		        '--opts' in OPTIONS), given the options analyzed so far. A "valid
+		        parameter", either for an option or for the command as a whole, is one
+		        that satisfies any corresponding regular expression (see '--opts' and
+		        '-n' in OPTIONS).
+
+		        If an argument satisfies these three conditions:
+
+		        (1) it begins with but is not just a hyphen ('-');
+		        (2) it does NOT directly follow an argument processed as type (1a) or
+		            (1b) above that accepts a parameter according to the specs (see
+		            '--opts'); and
+		        (3) it does not occur after an argument processed as the '--' option;
+
+		        then it will be interpreted as an option; otherwise it will be
+		        interpreted as a parameter. Note that it is irrelevant for the purposes
+		        of interpretation whether or not the argument corrseponds to an option
+		        allowed by the specification (see '--opts'); if it isn't but is
+		        processed as such, the script will exit with exit status 1 (see EXIT
+		        STATUS). This evinces the utility of the '--' option.
+
+		        Finally, as mentioned above, there is a special option, called the "help
+		        flag", that is treated specially by this script. If the option string
+		        (see '--opts') contains an option list matching the regex '(h~)?help'
+		        and the input contains an argument parsed as this option, then the
+		        restrictions regarding mandatory options (i.e., '|'-groups and
+		        '!'-options), as well as the parameter count and structure (see '-n'),
+		        are ignored. Note that if the option is marked as requiring a parameter,
+		        or if it is marked as mandatory, or if it is part of a conditional
+		        option group ('|' or ','), it is not a help flag and is treated
+		        identically to any other option. Unlike '--', the other special option,
+		        the help flag is not implicit and must be included in the option string
+		        to take effect.
+
+		        The arguments to be processed are all separate arguments to this
+		        function; passing in '--example=of -a --poorly -- formatted string' will
+		        be interpreted as a single long option named 'example=of -a --poorly
+		        --formatted string'; as this cannot be allowed by the option string (it
+		        has non (alphanumeric+hyphen) characters), the script will exit with
+		        exit status 1 (see EXIT STATUS).
+
+		    OUTPUT
+		        extract-args's output format is probably the most useful feature not
+		        included in getopt or getopts. All unnecessary information is stripped
+		        away, and the rest is packaged neatly and conveniently into two arrays.
+
+		        If the processed arguments obey the rules specified by the '--opts'
+		        option, then the script will generate two global variables:
+
+		        (1) a readonly associative array flagging the options that were called
+		            and containing their parameters; and
+		        (2) a readonly sequential array containing the command parameters.
+
+		        If the input does not obey the given rules, the command will exit with
+		        exit status 1 (see EXIT STATUS) and output nothing.
+
+		        The (key, value) pairs of the associative array depend on the nature of
+		        the options (as specified by the option string). In the below, 'opt'
+		        refers to an option's name, while 'param' refers to its parameter (if it
+		        has one):
+
+		        * If the option is in the input and has a parameter: (opt, param).
+		        * If it is in the input, has no parameter, and not named '-': (opt, '').
+		        * Otherwise, it will not appear in the array.
+
+		        (Furthermore, whenever an option name appears in the array, its synonym
+		        (if it has one; see '--opts' in OPTIONS) will also appear and with the
+		        same value.)
+
+		        *CRUCIALLY*, these rules imply that the output is *meaningless* without
+		        knowing the option specification. The array output acts as a flag for
+		        options without parameters while simultaneously packaging the parameters
+		        for options that have them. Thus, without the option string, you cannot
+		        differentiate an empty option parameter and a simple flag (incidentally,
+		        this is why optional parameters are forbidden).
+
+		        Secondly, there is the command parameter array, which is simply an
+		        indexed sequential array containing all command-wide parameters. If
+		        there are none, this array will be set, but empty.
+
+		        Of course, the script cannot simply output these arrays, as bash doesn't
+		        really allow any complex data to be passed around. Instead, two global
+		        variables are used, and the '-O' and '-P' options specify their names
+		        ('-O' is for the option array and '-P' for the paramater array; see
+		        OPTIONS). It is good practice to put these names in ALL_CAPS, as they
+		        are global variables; it is mandatory for the first character to be a
+		        capital letter (to avoid conflicts with extract-args's own variables).
+		        These default to 'OPTIONS' and 'PARAMS', so long as these names are
+		        unset. If an array name is empty or the default name is taken, then that
+		        global array will not be made or set, leaving the exit status as the
+		        only form of output. (The exit status provides a single bit of
+		        information as output--whether or not the input satisfies the option and
+		        parameter specifications.)
+
+		        Note that this means that the script must be sourced instead of executed
+		        to access any of this output!
+
+		    EXAMPLE
+		        This command's argument format would be passed as:
+
+		        . extract-args --opts='o~opts=;n=;O=/[A-Z][[:alnum:]_]*/;P=/[A-Z][[:alnum:]_]*/;h~help;!-' -n '-' -- ${input}
+
+		        where "${input}" is the set of positional arguments to process; in
+		        typical typical applications, this will just be "$@".
+
+		        Note that no regular expression was provided for 'o~opts=' or 'n='; this
+		        is because it is impossible! In particular, no regular expression
+		        matches a string if and only if that string is itself a regular
+		        expression. (Sidenote: this statement is not true with more advanced
+		        regular expression formats.) Thus, the above example exposes a
+		        shortcoming of this script: it can't do everything. Extra processing
+		        outside of extract-args would need to be done to ensure that 'o~opts='
+		        and 'n=' had valid parameters. Most of such busywork, however, can be
+		        taken care of by the script--that is the entire point, in fact! See
+		        LIMITATIONS below for more.
+
+		GLOSSARY
+		    Terminology regarding options, arguments, parameters, etc. greatly varies; I
+		    have taken what I found to be the most common definitions that were most
+		    applicable to this script's purposes and used those throughout this help
+		    page. (Note that the script's comments and variable namings are far less
+		    organized and do not necessarily follow this glossary's definitions
+		    whatsoever. Sorry.)
+
+		    Throughout the below definitions, I will make reference to the following
+		    example bash command:
+
+		    cmd --opt='my param' -abc -- -x
+
+		    argument:
+		        Upon receiving a simple command to execute, bash splits it into several
+		        words by unquoted whitespace. The leftmost word is the name of the
+		        program to be run; the rest are the inputs available to the script.
+		        These inputs are refered to as "arguments" and form a 1-indexed
+		        sequential array. An argument can be any string of non-null Unicode
+		        characters. In the example, there are four arguments: '--opt=param',
+		        '-abc', '--', and '-x'. (Often, the command being executed is itself
+		        considered an argument--namely, the 0th argument. This is not useful for
+		        this script's purposes and so this terminology is avoided.)
+
+		    option name:
+		        An option name refers to the name of an option (see below), not
+		        including any leading hyphens that are used to signify an option to a
+		        command. It can be (1) any nonempty string of alphanumeric charcters and
+		        hyphens that doesn't start with a hyphen, or (2) '-'. That is, it must
+		        satisfy the regular expression '[[:alnum:]][[:alnum:]-]*|-'. A short
+		        option name is a 1-character one; a long option name is anything longer.
+		        In the example, five option names are referenced. One is long, 'opt',
+		        and the rest are short: 'a', 'b', 'c', and '-'.
+
+		    normal option name:
+		        An option name (see above) other than '-'. In the example, four normal
+		        option names are referenced: 'opt', 'a', 'b', and 'c'.
+
+		    option:
+		        An option is a string passed as an argument (or part of an argument)
+		        intended to modify the behavior of the command. An option consists of
+		        two parts: an option name and (a) leading hyphen(s). These hyphens are
+		        what identify the argument as an option; without them, the string would
+		        it would be parsed as a command parameter (see below). Short option
+		        names must be prefixed by a single hyphen to form an option; long option
+		        names must be prefixed with two hyphens to form an option. A short
+		        option is an option with a short option name; a long option is an option
+		        with a long option name. The example contains five options. One is long,
+		        '--opt', and the rest are short: '-a', '-b', '-c', and '--'. (Note that
+		        the first four of these are not even arguments to the command. This is
+		        no problem; a long option may be connected to its parameter (see below)
+		        by an equals sign to form a single argument, and short options can be
+		        combined by concatenating their names and giving them all a shared a
+		        prefixing hyphen, again forming a single argument.)
+
+		    flag:
+		        Often used for a binary option--that is, an option (see above) that does
+		        not take a parameter and hence only communicates information via its
+		        presence or absence. The example has three flags: '-a', '-b', and '-c'.
+
+		    parameter:
+		        A parameter is either an option parameter (see below) or a command
+		        parameter (see below). The example contains two parameters: 'my param'
+		        and '-x'.
+
+		    option parameter:
+		        An option parameter is string passed as an argument (or part of an
+		        argument) that acts as an input to an option. It may be any string of
+		        non-null Unicode characters. An option parameter can be identified from
+		        its position; if an argument immediately follows an option that accepts
+		        a parameter, than that argument is an option parameter. Note that this
+		        means to properly parse a set of arguments, one must know in advance
+		        which options accept parameters. Alternatively, one can identify a long
+		        option's parameter by connecting it to its preceding option with an
+		        equals sign, forming a single argument. Many GNU utilities allow
+		        parameters to short options to be specified by concatenating them
+		        together; this parsing mechanism is not supported by extract-args (see
+		        LIMITATIONS). The example has one option parameter: 'my param'. Note
+		        that if the option '-c' accepted a parameter, then '--' would be parsed
+		        as such; this in turn would cause the following argument, '-x', to be
+		        parsed as an option instead of a command parameter. This hammers home
+		        the point that one cannot parse a set of arguments until one knows the
+		        properties of the options in play.
+
+		    command parameter:
+		        A command parameter is a string passes as an argument that acts as an
+		        input to the command. It may be any string of non-null Unicode
+		        characters. An argument is parsed as a command parameter under two
+		        conditions: (1) a previous argument was the option '--'; or (2) the
+		        argument either does not begin with a hyphen or is only a hyphen, and it
+		        does not immediately follow an option that accepts an argument. Thus, if
+		        one wishes a string with over one character that begins with a hyphen to
+		        be parsed as a command parameter instead of an option, one must use
+		        '--'; this is what that option is for. Note that this script treats '-'
+		        as a command parameter, not an option; GNU utilities vary on this point.
+		        The example contains one command parameter: '-x'.
+
+		LIMITATIONS
+		    There are several things this script cannot do. Here is an incomplete least,
+		    arranged roughly from most to least annoying:
+
+		        * No options can have optional parameters.
+
+		        * The -o'param' format for passing parameters to short options
+		          is not supported.
+
+		        * Other than '-', all option names must be nonempty strings containing
+		          only alphanumeric characters and hyphens, with no leading hyphens.
+		          (This is mostly due to me not knowing how to deal with Unicode's
+		          notion of canonical equivalence.)
+
+		        * It is assumed that no option will appear more than once; doing
+		          otherwise will lead to undefined behavior.
+
+		        * Subcommands are not supported.
+
+		        * Options can only be signalled with a hyphen ('-') or two. In
+		          particular, they cannot be signalled with pluses ('+').
+
+		        * The optional parameterless '--' option for separating options from
+		          parameters is implied and there is no way to turn it off (though you
+		          can make it mandatory).
+
+		        * The special behavior of the "help flag" (i.e., an option whose
+		          specification matches the regex '(h=)?help') cannot be disabled or
+		          modified.
+
+		        * The regular expressions are POSIX extended; there is no way to make
+		          use of grammars higher up in Chomsky's hierarchy.
+
+		        * As discussed in DESCRIPTION, there are limits to how specific the
+		          option interdependencies can be.
+
+		        * The number of parameters must be a (possibly unbounded) /range/ of
+		          nonnegative integers; you can't describe an arbitrary subset of the
+		          nonnegative integers.
+
+		        * The names of the global arrays must begin with a capital letter.
+
+		    If you don't like any of these constraints, then build your own option-
+		    parsing script! (And tell me about it, please, so I don't have to keep using
+		    this tangle of kludges.)
+
+		EXIT STATUS
+		    0  if successful.
+
+		    1  if the input strings do not obey the option or range specifications.
+
+		    2  if the option or range specification are improperly formatted, or one or
+		       both of the array names are invalid, reserved, or already readonly.
+
+		    3  if extract-args itself is given an invalid set of options.
+
+		    4  if an internal error occurs, indicating that this script is completely
+		       broken. Default.
+
+		SEE ALSO
+		    getopt(1), getopt(3), getopts(1)
+	EOF
+}
+
+function EXTRACT-ARGS-RETURN-TRAP {
+	unset -f invalid-input opt-fail fail internal-fail
+	unset -f BRIEF-USAGE USAGE EXTRACT-ARGS-RETURN-TRAP main
+	# I know eval is usually bad, but this should be okay since these strings
+	# were specifically created and sanitized by bash to be used as input.
+	trap - {1..31} {34..64}; eval -- "${BASH_TRAP_START}"
+	eval -- "${BASH_OPT_SHOPT_START}"
+	eval -- "${BASH_OPT_SET_START}"
+	unset BASH_TRAP_START BASH_OPT_SHOPT_START BASH_OPT_SET_START
+}
+
+trap EXTRACT-ARGS-RETURN-TRAP RETURN    # should apply to this script itself when sourced
+
+main "$@"
