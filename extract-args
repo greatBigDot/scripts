@@ -1,4 +1,12 @@
 #!/bin/bash
+
+local script="$(readlink -e -- "${BASH_SOURCE[0]}"; printf -- '%s' '_')"
+script="${script%
+_}"
+bash -n -- "${script}" || { printf -- '%s\n' 'extract-args: SYNTAX ERROR'; return 4; }
+
+(( ( "${BASH_VERINFO[0]}" == 4 && "${BASH_VERINFO[1]}" >= 4 ) || ( "${BASH_VERINFO[0]}" > 4 ) )) || { printf -- '%s\n' 'extract-args: ERROR: I'"'"'m pretty sure this script will fail with bash versions under 4.4. Sorry :(.'; return 4; }
+
 BASH_OPT_SET_START="$(shopt -op)"
 BASH_OPT_SHOPT_START="$(shopt -p)"
 BASH_TRAP_START="$(trap -p)"
