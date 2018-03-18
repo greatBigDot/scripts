@@ -11,7 +11,7 @@ BASH_OPT_SET_START="$(shopt -op)"
 BASH_OPT_SHOPT_START="$(shopt -p)"
 BASH_TRAP_START="$(trap -p)"
 
-. prelude    # See /usr/bin/prelude
+. prelude    # See scripts/prelude
 set +H    # Just in case
 
 # NOTE: pretty sure that as it's written, it will flop on bash versions <4.4
