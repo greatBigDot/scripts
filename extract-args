@@ -359,7 +359,7 @@ function BRIEF-USAGE {
 
 		USAGE
 		    extract-args [(-o | --opts) OPTSTR] [-n RANGE]
-		                 [-O OPT_ARR] [-P PARAM_ARR] -- <args>...
+		                 [-O OPT_ARR] [-P PARAM_ARR] -- [ARGS...]
 		    extract-args (-h | --help)
 	EOF
 }
@@ -374,7 +374,7 @@ function USAGE {
 
 		SYNOPSIS
 		    extract-args [(-o | --opts) OPTSTR] [-n RANGE]
-		                 [-O OPTARR] [-P PRMARR] -- <args>...
+		                 [-O OPTARR] [-P PRMARR] -- [ARGS...]
 		    extract-args (-h | --help)
 
 		DESCRIPTION
