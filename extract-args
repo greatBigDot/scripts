@@ -3,7 +3,7 @@
 script="$(readlink -e -- "${BASH_SOURCE[0]}"; printf -- '%s' '_')"
 script="${script%
 _}"
-bash -n -- "${script}" || { printf -- '%s\n' 'extract-args: SYNTAX ERROR'; return 4; }
+bash -n -- "${script}" || { printf -- '%s\n' 'extract-args: SYNTAX ERROR' 1>&2; return 4; }
 unset script
 
 BASH_OPT_SET_START="$(shopt -op)"
@@ -303,17 +303,16 @@ function invalid-input {
 		-1 ) echo 'Wrong number of params.';;
 		* );;
 	esac
-	printf -- '%s' 'INVALID INPUT: ' 1>&2; caller 1>&2
+	printf -- '%s' 'extract-args: INVALID INPUT: ' 1>&2; caller 1>&2
 	unset options params
 	unset -n options params
 	return 1
 }
 
 function opt-fail {
-	echo "ERROR: Improperly formatted option string, variable name, or range" 1>&2
+	echo "extract-args: ERROR: Improperly formatted option string, variable name, or range" 1>&2
 	echo "specification. Use '--help' for help." 1>&2
 	caller 1>&2
-	printf '<%s>\n' "${optstr_regex}"
 	unset options params
 	unset -n options params
 	return 2
@@ -328,10 +327,10 @@ function fail {
 
 function internal-fail {
 	cat <<- 'EOF' 1>&2
-		ERROR: Internal failure in extract-args!
-
+		extract-args: ERROR: Internal failure!
 		If you are reading this, then the option parser 'extract-args' isn't working
 		properly. You'll have to fix it. Good luck!
+
 	EOF
 	caller 1>&2
 	unset options params

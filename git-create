@@ -10,7 +10,7 @@ declare -r ARGS_FAIL="${ARGS_FAIL-0}"
 set -- "${PARAMS[@]}"
 
 function internal-fail {
-	echo 'ERROR: Internal error in '"'"'git-create'"'"'!' 1>&2
+	echo 'git-create: Internal error in '"'"'git-create'"'"'!' 1>&2
 	caller 1>&2
 	exit 5
 }
@@ -34,20 +34,21 @@ function args-fail {
 }
 
 function auth-fail {
-	echo -n 'ERROR: That username/password pair was not recognized;' 1>&2
-	echo ' repository not created.' 1>&2
+	echo 'git-create: ERROR: That username/password pair was not recognized; repository' 1>&2
+	echo 'not created.' 1>&2
 	exit 2
 }
 
 function internet-fail {
-	echo 'ERROR: Connection problems; curl exited with error code '"$1"'.' 1>&2
+	echo 'git-create: ERROR: Connection problems; curl exited with error code '"$1"'.' 1>&2
 	exit 3
 }
 
 function in-fail {
-	echo -n 'ERROR: git-create: Either could not find username or could not find repository' 1>&2
-	echo  'name; both the options and the local environment were searched.' 1>&2
+	echo 'git-create: ERROR: Either could not find username or could not find repository' 1>&2
+	echo 'name; both the options and the local environment were searched to no avail.'    1>&2
 	caller 1>&2
+	exit 4
 }
 
 function curl-fail {
