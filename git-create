@@ -1,0 +1,142 @@
+#!/bin/bash
+. prelude
+
+optstr='u~user=/./;h~help'
+c_args='0-1=.'
+unset OPTIONS PARAMS
+. extract-args -o "$optstr" -n "$c_args" -- "$@" || ARGS_FAIL=$?
+unset optstr c_args
+declare -r ARGS_FAIL="${ARGS_FAIL-0}"
+set -- "${PARAMS[@]}"
+
+function internal-fail {
+	echo 'ERROR: Internal error in '"'"'git-create'"'"'!' 1>&2
+	caller 1>&2
+	exit 5
+}
+trap internal-fail ERR
+
+function main {
+	(( $ARGS_FAIL <= 1 )); ! (( $ARGS_FAIL )) || args-fail
+	[ -v OPTIONS[help] ] && { USAGE; exit 0; }
+	local repo="${1-$(git remote get-url origin | grep -Po -- '(?<=\/).*?(?=\.git$)')}" || in-fail
+	[ -n "${repo}" ] || args-fail
+	local user="${OPTIONS[user]-$(git config --global user.name)}" || in-fail
+	[ -n "${user}" ] || args-fail
+	local url='https://api.github.com/user/repos'
+	curl -u "$user" "$url" -d '{"name":"'"${repo}"'"}' || curl-fail $?
+	exit 0
+}
+
+function args-fail {
+	BRIEF-USAGE 1>&2
+	exit 1
+}
+
+function auth-fail {
+	echo -n 'ERROR: That username/password pair was not recognized;' 1>&2
+	echo ' repository not created.' 1>&2
+	exit 2
+}
+
+function internet-fail {
+	echo 'ERROR: Connection problems; curl exited with error code '"$1"'.' 1>&2
+	exit 3
+}
+
+function in-fail {
+	echo -n 'ERROR: git-create: Either could not find username or could not find repository' 1>&2
+	echo  'name; both the options and the local environment were searched.' 1>&2
+	caller 1>&2
+}
+
+function curl-fail {
+	case "$1" in
+		2 | 3 )
+			internal-fail ;;
+		67 )
+			auth-fail ;;
+		* )
+			internet-fail "$1" ;;
+	esac
+}
+
+function BRIEF-USAGE {
+	cat <<- 'EOF'
+		SUMMARY
+		    git-create - Create a remote git repository on GitHub.
+
+		USAGE
+		    git-create [(-u | --user) <usr>] [--] <repo>
+		    git-create (-h | --help)
+	EOF
+}
+
+function USAGE {
+	cat <<- 'EOF'
+		NAME
+		    git-create - Create a remote git repository on GitHub.
+
+		SYNOPSIS
+		    git-create [(-u | --user) USER] [--] REPO
+		    git-create (-h | --help)
+
+		DESCRIPTION
+		    Create a remote git repository on GitHub.
+
+		    Exactly what it says on the tin. The script attempts to create a remote git
+		    repository on GitHub through the GitHub API. Currently unable to create
+		    repositories on any other git-capable server (e.g., BitBucket).
+
+		OPTIONS
+
+		    -u, --user USER    The account name under which to create the repository.
+		                       Must be a non-empty string of non-null Unicode
+		                       characters.
+		                       [default: "$(git config --global user.name)"]
+
+		    -h, --help         Display this help message.
+
+		    --                 Separates options and their parameters from command
+		                       parameters.
+
+		INPUT
+		    This script takes in either zero or one command parameters. If present, it
+		    used as the repository name. Otherwise, it is parsed from the command
+		    'git remote get-url origin'. It must be a non-empty string of non-null
+		    Unicode characters.
+
+		    If the '(-u | --user)' option is not used, the script takes the system's
+		    global git username for the username. This data is stored in the git config
+		    file (typically ~/.gitconfig).
+
+		    The account's password will be expected through the terminal (echoing
+		    disabled, of course).
+
+		OUTPUT
+		    No local output is generated.
+
+		    If successful, a new git repository should exist on GitHub under the
+		    specified user with the specified name.
+
+		EXIT STATUS
+		    0  if successful.
+
+		    1  if an invalid set of arguments are presented.
+
+		    2  if incorrect username/password.
+
+		    3  if remote repo creation failed (e.g., no Internet connection).
+
+		    4  if no username was specified and a default could not be found, or no
+		       repository name was specified and could not be parsed from the current
+		       directory's repo (if it even exists!).
+
+		    5  if an internal error occurs due to my poor programming ability.
+
+		SEE ALSO
+		    git(1)
+	EOF
+}
+
+main "$@"
