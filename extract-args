@@ -1,18 +1,17 @@
 #!/bin/bash
 
-local script="$(readlink -e -- "${BASH_SOURCE[0]}"; printf -- '%s' '_')"
+script="$(readlink -e -- "${BASH_SOURCE[0]}"; printf -- '%s' '_')"
 script="${script%
 _}"
 bash -n -- "${script}" || { printf -- '%s\n' 'extract-args: SYNTAX ERROR'; return 4; }
-
-(( ( "${BASH_VERINFO[0]}" == 4 && "${BASH_VERINFO[1]}" >= 4 ) || ( "${BASH_VERINFO[0]}" > 4 ) )) || { printf -- '%s\n' 'extract-args: ERROR: I'"'"'m pretty sure this script will fail with bash versions under 4.4. Sorry :(.'; return 4; }
+unset script
 
 BASH_OPT_SET_START="$(shopt -op)"
 BASH_OPT_SHOPT_START="$(shopt -p)"
 BASH_TRAP_START="$(trap -p)"
 
 . prelude    # See scripts/prelude
-set +H    # Just in case
+(( ( "${BASH_VERSINFO[0]}" == 4 && "${BASH_VERSINFO[1]}" >= 4 ) || ( "${BASH_VERSINFO[0]}" > 4 ) )) || { printf -- '%s\n' 'extract-args: WARNING: This script may uncerimoniously fail with bash versions under 4.4. Sorry :(.' 1>&2; set +u; }
 
 # NOTE: pretty sure that as it's written, it will flop on bash versions <4.4
 # cause of the weird ways empty arrays were dealt with while 'nounset' was
@@ -840,7 +839,7 @@ function EXTRACT-ARGS-RETURN-TRAP {
 	unset -f BRIEF-USAGE USAGE EXTRACT-ARGS-RETURN-TRAP main
 	# I know eval is usually bad, but this should be okay since these strings
 	# were specifically created and sanitized by bash to be used as input.
-	trap - {1..31} {34..64}; eval -- "${BASH_TRAP_START}"
+	trap - {1..31} {34..64} EXIT DEBUG RETURN ERR;trap '' RETURN;eval -- "${BASH_TRAP_START}"
 	eval -- "${BASH_OPT_SHOPT_START}"
 	eval -- "${BASH_OPT_SET_START}"
 	unset BASH_TRAP_START BASH_OPT_SHOPT_START BASH_OPT_SET_START
