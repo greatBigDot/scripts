@@ -70,7 +70,7 @@ main () {
 	local param
 	local options params
 	# local OPTIONS=( )
-	local name_regex='^(([A-Z_][a-zA-Z_0-9]*)|)$'
+	local name_regex='^(([A-Z][[:alnum:]_]*)|)$'
 
 	[ ! -v 'OPTIONS' ] && options='OPTIONS' || options=''
 	[ ! -v 'PARAMS' ] && params='PARAMS' || params=''
@@ -133,14 +133,8 @@ main () {
 
 	local opt_regex='([[:alnum:]][[:alnum:]-]*|[[:alnum:]]~[[:alnum:]][[:alnum:]-]+|-)'
 	local optspec_regex='(!?'"${opt_regex}"'=(/(.*[^\\])?/)?|'"${opt_regex}"'((\|'"${opt_regex}"')*|(,'"${opt_regex}"')*))'
-	local optstr_regex='(('"${optspec_regex}"'(;'"${optspec_regex}"')*)?)'
-	local err=0
-	[[ "$optstr" =~ ^${optstr_regex}$ ]] || err=$?
-	case $err in
-		0 ) ;;
-		1 ) opt-fail || return $? ;;
-		2 ) internal-fail || return $? ;;
-	esac;unset err
+	local optstr_regex='(('"${optspec_regex}"'(;[[:space:]]*'"${optspec_regex}"')*)?)'
+	[[ "$optstr" =~ ^${optstr_regex}$ ]] || opt-fail
 
 	# 'opts' is an associative array; it holds this data:
 	#   * option name and synonym (if applicable);
@@ -150,11 +144,11 @@ main () {
 	#   * conditional info.
 	# Neither holds info about mandatoriness; that's controlled by the linear
 	# array 'mandatory'.
-
 	local err _regex opt char regex _optstr="${optstr}"
 	while [ -n "${optstr}" ];do
 		char="$(printf '%s' "${optstr}" | grep -zo -- '[;,|=]' | cut -c1)" || :
 		IFS=';,|=' read -rd '' -- opt optstr < <(printf '%s' "${optstr}")  || :
+		optstr="${optstr##*([[:space:]])}"
 		if [ "${char}" == '=' ]; then
 			if [ "${optstr:0:1}" != '/' ]; then
 				opts+=( ["${opt#\!}"]='//' )
@@ -469,8 +463,10 @@ function USAGE {
 		                             bar seperator.
 
 		                             An option string is a series of option lists
-		                             seperated by semicolons (';'). No option name may
-		                             appear twice. An option list matching the regex
+		                             seperated by strings beginning with a semicolon
+		                             (';') and ending with an optinal sequence of
+		                             whitespace characters. No option name may appear
+		                             twice. An option list matching the regex
 		                             '(h=)?help' is known as a "help flag"; if a help
 		                             flag is used, then the mandatory option and list
 		                             conditions ('!''s and '|''s) do not have to be
@@ -654,11 +650,14 @@ function USAGE {
 		    EXAMPLE
 		        This command's argument format would be passed as:
 
-		        name='[A-Z][[:alnum:]]*'
-		        optstr='o~opts=;n=;O=/'"$name"'/;P=/'"$name"'/;h~help;!-'
-		        . extract-args --opts="$optstr" -n '-' -- ${input}
+		        name='[A-Z][[:alnum:]_]*'
+		        optstr='o~opts=;n=;
+		                O=/'"$name"'/;P=/'"$name"'/;
+		                h~help;!-'
+		        unset name
+		        source extract-args --opts="$optstr" -n '-' -- "${input[@]}"
 
-		        where "${input}" is the set of positional arguments to process; in
+		        where 'input' is the array of positional arguments to process; in
 		        typical typical applications, this will just be "$@".
 
 		        Note that no regular expression was provided for 'o~opts=' or 'n='; this
@@ -668,8 +667,8 @@ function USAGE {
 		        regular expression formats.) Thus, the above example exposes a
 		        shortcoming of this script: it can't do everything. Extra processing
 		        outside of extract-args would need to be done to ensure that 'o~opts='
-		        and 'n=' had valid parameters. Most of such busywork, however, can be
-		        taken care of by the script--that is the entire point, in fact! See
+		        and 'n=' had valid parameters. /Most/ of such busywork, however, /can/
+		        be taken care of by the script--that is the entire point, in fact! See
 		        LIMITATIONS below for more.
 
 		GLOSSARY
