@@ -6,9 +6,11 @@ _}"
 bash -n -- "${script}" || { printf -- '%s\n' 'extract-args: SYNTAX ERROR' 1>&2; return 4; }
 unset script
 
-BASH_OPT_SET_START="$(shopt -op)"
-BASH_OPT_SHOPT_START="$(shopt -p)"
-BASH_TRAP_START="$(trap -p)"
+IFS='' read -rd '' -- BASH_OPT_SET_START   < <(shopt -op)
+IFS='' read -rd '' -- BASH_OPT_SHOPT_START < <(shopt -p)
+IFS='' read -rd '' -- BASH_TRAP_START      < <(trap -p)
+
+# printf -- 'test3: "%s"\n' "${BASH_TRAP_START}" 1>&2
 
 . prelude    # See scripts/prelude
 (( ( "${BASH_VERSINFO[0]}" == 4 && "${BASH_VERSINFO[1]}" >= 4 ) || ( "${BASH_VERSINFO[0]}" > 4 ) )) || { printf -- '%s\n' 'extract-args: WARNING: This script may uncerimoniously fail with bash versions under 4.4. Sorry :(.' 1>&2; set +u; }
@@ -81,10 +83,10 @@ main () {
 		case "$1" in
 			-o|--opts )
 				[ -n "${2+_}" ] || { fail || return $?; }
-				optstr="$2"
+				optstr="${2##*([[:space:]])}"
 				shift 2 ;;
 			--opts=*)
-				optstr="${1#--opts=}"
+				optstr="${1#--opts=*([[:space:]])}"
 				shift ;;
 			-n )
 				[ -n "${2+_}" ] || { fail || return $?; }
@@ -132,9 +134,12 @@ main () {
 	fi
 
 	local opt_regex='([[:alnum:]][[:alnum:]-]*|[[:alnum:]]~[[:alnum:]][[:alnum:]-]+|-)'
-	local optspec_regex='(!?'"${opt_regex}"'=(/(.*[^\\])?/)?|'"${opt_regex}"'((\|'"${opt_regex}"')*|(,'"${opt_regex}"')*))'
+	local prm_regex='(/((\\.)?[^\\/]?)*/)'
+    local opt_prm_regex='('"${opt_regex}"'(='"${prm_regex}"'?)?)'
+	local optspec_regex='((!'"${opt_prm_regex}"')|('"${opt_prm_regex}"'((\|'"${opt_prm_regex}"')*|(,'"${opt_prm_regex}"')*)))'
 	local optstr_regex='(('"${optspec_regex}"'(;[[:space:]]*'"${optspec_regex}"')*)?)'
-	[[ "$optstr" =~ ^${optstr_regex}$ ]] || opt-fail
+	unset opt_regex prm_regex opt_prm_regex optspec_regex
+	[[ "$optstr" =~ ^${optstr_regex}$ ]] || { opt-fail || return $?; }
 
 	# 'opts' is an associative array; it holds this data:
 	#   * option name and synonym (if applicable);
@@ -146,28 +151,30 @@ main () {
 	# array 'mandatory'.
 	local err _regex opt char regex _optstr="${optstr}"
 	while [ -n "${optstr}" ];do
-		char="$(printf '%s' "${optstr}" | grep -zo -- '[;,|=]' | cut -c1)" || :
-		IFS=';,|=' read -rd '' -- opt optstr < <(printf '%s' "${optstr}")  || :
+		char="$(printf '%s' "${optstr}" | grep -zom1 -- '[;,|=]' | cut -c1)" || :
+		IFS="${char}" read -rd '' -- opt optstr < <(printf '%s' "${optstr}") || :
 		optstr="${optstr##*([[:space:]])}"
 		if [ "${char}" == '=' ]; then
 			if [ "${optstr:0:1}" != '/' ]; then
 				opts+=( ["${opt#\!}"]='//' )
 				optstr="${optstr:1}"
+				optstr="${optstr##*([[:space:]])}"
 			else
-				regex="$(printf '%s' "${optstr}" | grep -zoE -- '^/[^\\/]*(\\.[^\\/]*)*/' | tr -d '\000')"
+				regex="$(printf '%s' "${optstr}" | grep -zoEm1 -- '^/((\\.)?[^\\/]?)*/' | tr -d '\000')"
 				_regex="${regex%/}"; _regex="${_regex#/}"
 				err=0; [[ '' =~ ${_regex} ]] || err=$?
 				(( err <= 1 )) || { opt-fail || return $?; }
 				opts+=( ["${opt#\!}"]="${regex}" )
 				optstr="${optstr:${#regex}+1}"
+				optstr="${optstr##*([[:space:]])}"
 			fi
 		else
 			opts+=( ["${opt#\!}"]='' )
 		fi
 		[ "${opt:0:1}" == '!' ] && mandatory+=( "${opt#\!}" )
 	done; unset opt regex char err _regex; optstr="${_optstr}"; unset _optstr
-
-	IFS=';' read -r -d '' -a specs < <(printf '%s' "${optstr//\!/}" | sed -Ez -- 's/=(\/[^\\\/]*(\\.[^\\\/]*)*\/)?//g') || :
+	IFS=';' read -r -d '' -a specs < <(printf '%s' "${optstr//[\![:space:]]/}" | sed -Ez -- 's/=(\/((\\.)?[^\\\/]?)*\/)?//g') || :
+	# printf -- "'%s'\n" "${specs[@]}" 1>&2
 
 	local param regex arg opt
 	while (( "$#" > 0 )); do
@@ -192,7 +199,7 @@ main () {
 				match=1; break
 			fi
 		done
-		(( match )) || { invalid-input; return $?; };unset match
+		(( match )) || { invalid-input || return $?; }; unset match
 		unset match
 		regex="${opts[$opt]}"
 
@@ -229,7 +236,7 @@ main () {
 		fi
 		if [ -n "${regex}" ]; then
 			regex="${regex%/}";regex="${regex#/}"
-			[[ ${param} =~ ${regex} ]] || { invalid-input || return $?; }
+			[[ ${param} =~ ${regex} ]] || { printf -- 'extract-args: %s\n' "'${param}' does not satisfy '${regex}', the regex for '${opt}'." 1>&2; invalid-input || return $?; }
 		fi
 
 		# If the script has gotten this far, then everything is golden for this
@@ -249,6 +256,7 @@ main () {
 	if ! (( $help_flag ));then
 		# First things first (remember, at this point we know that the option names
 		# are valid (e.g., no '/''s)):
+		# printf -- '\n\nextract-args:  '"'"'%s'"'"'\n\n' "${specs[@]}" 1>&2
 		! (( "${#mandatory[@]}" )) && ! [[ "${specs[*]}" =~ \| ]] || \
 				{ invalid-input || return $?; }
 
@@ -837,7 +845,8 @@ function EXTRACT-ARGS-RETURN-TRAP {
 	unset -f BRIEF-USAGE USAGE EXTRACT-ARGS-RETURN-TRAP main
 	# I know eval is usually bad, but this should be okay since these strings
 	# were specifically created and sanitized by bash to be used as input.
-	trap - {1..31} {34..64} EXIT DEBUG RETURN ERR;trap '' RETURN;eval -- "${BASH_TRAP_START}"
+	trap - {1..31} {34..64} EXIT DEBUG RETURN ERR;trap '' RETURN; eval -- "${BASH_TRAP_START}"
+#	printf -- '\n%s\n%s\n%s\n\n' 'Resetting... ' "'${BASH_OPT_SHOPT_START}'" "'${BASH_OPT_SET_START}'" 1>&2
 	eval -- "${BASH_OPT_SHOPT_START}"
 	eval -- "${BASH_OPT_SET_START}"
 	unset BASH_TRAP_START BASH_OPT_SHOPT_START BASH_OPT_SET_START

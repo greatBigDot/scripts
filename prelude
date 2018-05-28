@@ -1,4 +1,4 @@
 #!/bin/bash
-set -EeufC -o pipefail
+set -EeufC -o pipefail -o emacs
 shopt -s checkhash extglob lastpipe gnu_errfmt mailwarn shift_verbose
-shopt -s dotglob nullglob    # Don't actually do anything now because of the 'set -f', but if I want to use filename globbing in a particular script with 'set +f', then these seem like good ideas.
+shopt -s dotglob nullglob    # These don't actually do anything now because of the 'set -f', but if I want to use filename globbing in a particular script with 'set +f', then these seem like good ideas.
