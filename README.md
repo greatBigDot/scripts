@@ -19,3 +19,5 @@ greatly reduced--down to few lines--for parsing all of a script's arguments.
 
 **git-create**: Creates a remote git repository. Currently only works for
   GitHub.
+
+TODO: document structure change; prelude now in BASH_ENV, not explicitly called

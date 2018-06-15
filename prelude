@@ -1,4 +1,8 @@
 #!/bin/bash
-set -EeufC -o pipefail -o emacs
-shopt -s checkhash extglob lastpipe gnu_errfmt mailwarn shift_verbose
-shopt -s dotglob nullglob    # These don't actually do anything now because of the 'set -f', but if I want to use filename globbing in a particular script with 'set +f', then these seem like good ideas.
+IFS='' read -r -d '' -- dir < <(dirname -z -- "${_}" | xargs -0i -- readlink -m -- '{}') || :; dir="${dir%$'\n'}"
+if [ "${dir}" == '/usr/local/bin' ]; then
+	set -eEufC -o pipefail -o emacs
+	shopt -s checkhash extglob lastpipe gnu_errfmt mailwarn shift_verbose
+	shopt -s dotglob nullglob    # These don't actually do anything now because of the 'set -f', but if I want to use filename globbing in a particular script with 'set +f', then these seem like good ideas.
+	# # set -e    # I set up the system to automatically call prelude before executing any bash script. This makes things marginally more convenient for me when writing my own scripts, but it also introduces an unknown amount of unexpected behavior. Whatever the extent of the damage, this option will/has certainly produce/produced quite aa few errors and is probably the worst offender. Thus, I have commented this out; my shell scripts should now call 'set -e' manually (thus diminishing the utility of making this script run by default, but I digress). # See conditional. probably fixed? idk
+fi

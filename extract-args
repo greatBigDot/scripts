@@ -12,7 +12,7 @@ IFS='' read -rd '' -- BASH_TRAP_START      < <(trap -p)
 
 # printf -- 'test3: "%s"\n' "${BASH_TRAP_START}" 1>&2
 
-. prelude    # See scripts/prelude
+
 (( ( "${BASH_VERSINFO[0]}" == 4 && "${BASH_VERSINFO[1]}" >= 4 ) || ( "${BASH_VERSINFO[0]}" > 4 ) )) || { printf -- '%s\n' 'extract-args: WARNING: This script may uncerimoniously fail with bash versions under 4.4. Sorry :(.' 1>&2; set +u; }
 
 # NOTE: pretty sure that as it's written, it will flop on bash versions <4.4
