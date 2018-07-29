@@ -1,5 +1,5 @@
 #!/bin/bash
-
+. prelude
 
 optstr='u~user=/./;h~help'
 c_args='0-1=.'

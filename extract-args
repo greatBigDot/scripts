@@ -1,17 +1,15 @@
 #!/bin/bash
-
+. prelude
 script="$(readlink -e -- "${BASH_SOURCE[0]}"; printf -- '%s' '_')"
 script="${script%
 _}"
 bash -n -- "${script}" || { printf -- '%s\n' 'extract-args: SYNTAX ERROR' 1>&2; return 4; }
 unset script
 
-IFS='' read -rd '' -- BASH_OPT_SET_START   < <(shopt -op)
-IFS='' read -rd '' -- BASH_OPT_SHOPT_START < <(shopt -p)
-IFS='' read -rd '' -- BASH_TRAP_START      < <(trap -p)
-
+IFS='' read -rd '' -- BASH_OPT_SET_START   < <(shopt -op) || :
+IFS='' read -rd '' -- BASH_OPT_SHOPT_START < <(shopt -p)  || :
+BASH_TRAP_START="$(trap -p)"
 # printf -- 'test3: "%s"\n' "${BASH_TRAP_START}" 1>&2
-
 
 (( ( "${BASH_VERSINFO[0]}" == 4 && "${BASH_VERSINFO[1]}" >= 4 ) || ( "${BASH_VERSINFO[0]}" > 4 ) )) || { printf -- '%s\n' 'extract-args: WARNING: This script may uncerimoniously fail with bash versions under 4.4. Sorry :(.' 1>&2; set +u; }
 
@@ -41,13 +39,13 @@ IFS='' read -rd '' -- BASH_TRAP_START      < <(trap -p)
 #             yourself. idk why, though; I guess I really don't understand what
 #             'set -e' is about.
 # Ok, finally figured it all out! Thanks for all your help, past selves 2-4 (and no thanks to you, past self 1, since you never knew what you were talking about in the first place). The odd behavior is a consequence of two rules of the 'errexit' shell option:
-# * In a conditional command list or in a '!'-negated pipeline, only the last command in the list can be affected by the option is question. **NOT** the last command executed, the last command in the list. Hence, false && false, despite exiting with error code 1, does not cause 'errexit' to take effect. The first false is ignored by the option since it isn't the last command in the command list; the second false is never executed and so its exit status is never read.
+# * In a conditional command list or in a '!'-negated pipeline (EDIT: the negation part is wrong; a negated pipeline NEVER triggers the option), only the last command in the list can be affected by the option is question. **NOT** the last command executed, the last command in the list. Hence, false && false, despite exiting with error code 1, does not cause 'errexit' to take effect. The first false is ignored by the option since it isn't the last command in the command list; the second false is never executed and so its exit status is never read.
 # * Even more counterintuitively, in a context where 'errexit' is ignored, all function calls likewise ignore it. So, if I call this script as 'extract-args [whatever] || error', then the script will be executed as if 'errexit' was never set---even when 'set -e' is also called within that script itself! As far as I can tell, this behavior only occurs when a script is sourced.
 # As far as I can tell, there is no way to disable or override any of this, though there may be partial workarounds involving 'trap'.
 # Sooner or later, I should rewrite all this to reflect bash's actual capabilities instead of the hodgepodge of kludges it currently is.
 
-main () {
-	trap 'internal-fail;return $?' ERR HUP INT KILL TERM
+function extract-args::main () {
+	trap 'extract-args::internal-fail;return $?' ERR HUP INT KILL TERM
 	# set -E    # maybe? idk
 	# TODO: Make cloned options fail properly (e.g. if an option is used twice
 	# in the input).
@@ -77,44 +75,44 @@ main () {
 	[ ! -v 'OPTIONS' ] && options='OPTIONS' || options=''
 	[ ! -v 'PARAMS' ] && params='PARAMS' || params=''
 
-	(( "$#" > 0 )) || { fail || return $?; }
+	(( "$#" > 0 )) || { extract-args::fail || return $?; }
 
 	while (( "$#" > 0 )); do
 		case "$1" in
 			-o|--opts )
-				[ -n "${2+_}" ] || { fail || return $?; }
+				[ -n "${2+_}" ] || { extract-args::fail || return $?; }
 				optstr="${2##*([[:space:]])}"
 				shift 2 ;;
 			--opts=*)
 				optstr="${1#--opts=*([[:space:]])}"
 				shift ;;
 			-n )
-				[ -n "${2+_}" ] || { fail || return $?; }
-				[[ $2 =~ ^(([0-9]*-[0-9]*)|([0-9]+))(=.*)?$ ]] || { opt-fail || return $?; }
+				[ -n "${2+_}" ] || { extract-args::fail || return $?; }
+				[[ $2 =~ ^(([0-9]*-[0-9]*)|([0-9]+))(=.*)?$ ]] || { extract-args::opt-fail || return $?; }
 				num='0'"$2"    # should be fine
 				! [[ ${num%%=*} =~ '-' ]] && num="${num%%=*}"'-'"${num}"    # ditto
 				if [[ $num =~ '=' ]]; then
 					local err=0; [[ '' =~ "${num#*=}" ]] || err=$?
-					(( $err <= 1 )) || { opt-fail || return $?; }; unset err
+					(( $err <= 1 )) || { extract-args::opt-fail || return $?; }; unset err
 				fi
 				shift 2 ;;
 			-O )    # TODO: Check for clashes with special names (e.g. PATH, _).
-				[ -n "${2+_}" ] && [ ! "${2}" = '--' ] || { fail || return $?; }
-				[[ "$2" =~ ${name_regex} ]] || { opt-fail || return $?; }
+				[ -n "${2+_}" ] && [ ! "${2}" = '--' ] || { extract-args::fail || return $?; }
+				[[ "$2" =~ ${name_regex} ]] || { extract-args::opt-fail || return $?; }
 				options="$2"
 				shift 2 ;;
 			-P )    # TODO: Check for clashes with special names (e.g. PATH, _).
-				[[ "$2" =~ ${name_regex} ]] || { opt-fail || return $?; }
+				[[ "$2" =~ ${name_regex} ]] || { extract-args::opt-fail || return $?; }
 				params="$2"
 				shift 2 ;;
 			-h*|--help )
-				printf '%s\n' "$(USAGE)";return 0 ;;
+				printf '%s\n' "$(extract-args::USAGE)";return 0 ;;
 			-- )
 				# Note that this is mandatory (unless '--help' is used).
 				shift
 				break ;;
 			* )
-				{ fail || return $?; } ;;
+				{ extract-args::fail || return $?; } ;;
 		esac
 	done
 
@@ -139,7 +137,7 @@ main () {
 	local optspec_regex='((!'"${opt_prm_regex}"')|('"${opt_prm_regex}"'((\|'"${opt_prm_regex}"')*|(,'"${opt_prm_regex}"')*)))'
 	local optstr_regex='(('"${optspec_regex}"'(;[[:space:]]*'"${optspec_regex}"')*)?)'
 	unset opt_regex prm_regex opt_prm_regex optspec_regex
-	[[ "$optstr" =~ ^${optstr_regex}$ ]] || { opt-fail || return $?; }
+	[[ "$optstr" =~ ^${optstr_regex}$ ]] || { extract-args::opt-fail || return $?; }
 
 	# 'opts' is an associative array; it holds this data:
 	#   * option name and synonym (if applicable);
@@ -163,7 +161,7 @@ main () {
 				regex="$(printf '%s' "${optstr}" | grep -zoEm1 -- '^/((\\.)?[^\\/]?)*/' | tr -d '\000')"
 				_regex="${regex%/}"; _regex="${_regex#/}"
 				err=0; [[ '' =~ ${_regex} ]] || err=$?
-				(( err <= 1 )) || { opt-fail || return $?; }
+				(( err <= 1 )) || { extract-args::opt-fail || return $?; }
 				opts+=( ["${opt#\!}"]="${regex}" )
 				optstr="${optstr:${#regex}+1}"
 				optstr="${optstr##*([[:space:]])}"
@@ -180,7 +178,7 @@ main () {
 	while (( "$#" > 0 )); do
 		case "$1" in
 			-- ) shift; break ;;
-			-?=* | --? | --?=* ) invalid-input || return $? ;;
+			-?=* | --? | --?=* ) extract-args::invalid-input || return $? ;;
 			--*=* )
 			    param="${1#*=}" ;;
 			--*  | -? ) ;;
@@ -199,7 +197,7 @@ main () {
 				match=1; break
 			fi
 		done
-		(( match )) || { invalid-input || return $?; }; unset match
+		(( match )) || { extract-args::invalid-input || return $?; }; unset match
 		unset match
 		regex="${opts[$opt]}"
 
@@ -230,20 +228,20 @@ main () {
 
 		if { [ -z "${regex}" ] && [ -v param ]; } || \
 			   { [ -n "${regex}" ] && [ ! -v param ] && (( ${#} == 1 )); };then
-			invalid-input || return $?
+			extract-args::invalid-input || return $?
 		elif [ -n "${regex}" ] && [ ! -v param ]; then
 			param="$2";	shift 1    # it's either this or make a var for the shift size.
 		fi
 		if [ -n "${regex}" ]; then
 			regex="${regex%/}";regex="${regex#/}"
-			[[ ${param} =~ ${regex} ]] || { printf -- 'extract-args: %s\n' "'${param}' does not satisfy '${regex}', the regex for '${opt}'." 1>&2; invalid-input || return $?; }
+			[[ ${param} =~ ${regex} ]] || { printf -- 'extract-args: %s\n' "'${param}' does not satisfy '${regex}', the regex for '${opt}'." 1>&2; extract-args::invalid-input || return $?; }
 		fi
 
 		# If the script has gotten this far, then everything is golden for this
 		# argument. Now we just need to set up the output.
 		param="${param-}"
 		options["${opt#?~}"]="$param"
-	    options["${opt%~*}"]="$param"
+		options["${opt%~*}"]="$param"
 
 		# Now we're done--with this argument, at least. Onto the next:
 		shift 1
@@ -258,20 +256,20 @@ main () {
 		# are valid (e.g., no '/''s)):
 		# printf -- '\n\nextract-args:  '"'"'%s'"'"'\n\n' "${specs[@]}" 1>&2
 		! (( "${#mandatory[@]}" )) && ! [[ "${specs[*]}" =~ \| ]] || \
-				{ invalid-input || return $?; }
+				{ extract-args::invalid-input || return $?; }
 
 		# Now the command parameters.
 		# Remember that there is definitely a hyphen somewhere; see above.
 		local min max regex
 		IFS='-=' read -rd '' -- min max regex 0< <(printf '%s' "$num") || :
 		(( $# >= ${min} )) && { [ -z "$max" ] || (( $# <= ${max} )); } || \
-			{ invalid-input || return $?; }; unset min max
+			{ extract-args::invalid-input || return $?; }; unset min max
 
 		# also this:
 		if [ -n "${regex-}" ]; then
 			local p
 			for p in "$@";do
-				[[ "$p" =~ ${regex} ]] || { invalid-input || return $?; }
+				[[ "$p" =~ ${regex} ]] || { extract-args::invalid-input || return $?; }
 			done; unset p
 		fi
 		unset regex
@@ -295,7 +293,7 @@ main () {
 }
 
 # TODO: make sure these don't overwrite
-function invalid-input {
+function extract-args::invalid-input {
 	case "${1-}" in
 		0  ) echo "Option '$2' not found." 1>&2 ;;
 		1  ) echo "Option '$2' requires a param." 1>&2 ;;
@@ -311,7 +309,7 @@ function invalid-input {
 	return 1
 }
 
-function opt-fail {
+function extract-args::opt-fail {
 	echo "extract-args: ERROR: Improperly formatted option string, variable name, or range" 1>&2
 	echo "specification. Use '--help' for help." 1>&2
 	caller 1>&2
@@ -320,14 +318,14 @@ function opt-fail {
 	return 2
 }
 
-function fail {
-	echo "$(BRIEF-USAGE)" 1>&2
+function extract-args::fail {
+	echo "$(extract-args::BRIEF-USAGE)" 1>&2
 	unset options params
 	unset -n options params
 	return 3
 }
 
-function internal-fail {
+function extract-args::internal-fail {
 	cat <<- 'EOF' 1>&2
 		extract-args: ERROR: Internal failure!
 		If you are reading this, then the option parser 'extract-args' isn't working
@@ -349,7 +347,7 @@ function internal-fail {
 # columns wide upon output, they need to be  80+(2*tab-width)  here.
 # Use emacs's 'whitespace-mode' to see what's going on here.
 
-function BRIEF-USAGE {
+function extract-args::BRIEF-USAGE {
 	cat <<- 'EOF'
 		SUMMARY
 		    extract-args - Parse a set of command arguments.
@@ -364,7 +362,7 @@ function BRIEF-USAGE {
 	EOF
 }
 
-function USAGE {
+function extract-args::USAGE {
 	cat <<- 'EOF'
 		NAME
 		    extract-args - Parse a set of command arguments.
@@ -722,17 +720,17 @@ function USAGE {
 		        intended to modify the behavior of the command. An option consists of
 		        two parts: an option name and (a) leading hyphen(s). These hyphens are
 		        what identify the argument as an option; without them, the string would
-		        it would be parsed as a command parameter (see below). Short option
-		        names must be prefixed by a single hyphen to form an option; long option
-		        names must be prefixed with two hyphens to form an option. A short
-		        option is an option with a short option name; a long option is an option
-		        with a long option name. The example contains five options. One is long,
-		        '--opt', and the rest are short: '-a', '-b', '-c', and '--'. (Note that
-		        the first four of these are not even arguments to the command. This is
-		        no problem; a long option may be connected to its parameter (see below)
-		        by an equals sign to form a single argument, and short options can be
-		        combined by concatenating their names and giving them all a shared a
-		        prefixing hyphen, again forming a single argument.)
+		        be parsed as a command parameter (see below). Short option names must be
+		        prefixed by a single hyphen to form an option; long option names must be
+		        prefixed with two hyphens to form an option. A short option is an option
+		        with a short option name; a long option is an option with a long option
+		        name. The example contains five options. One is long, '--opt', and the
+		        rest are short: '-a', '-b', '-c', and '--'. (Note that the first four of
+		        these are not even arguments to the command. This is no problem; a long
+		        option may be connected to its parameter (see below) by an equals sign
+		        to form a single argument, and short options can be combined by
+		        concatenating their names and giving them all a shared prefixing hyphen,
+		        again forming a single argument.)
 
 		    flag:
 		        Often used for a binary option--that is, an option (see above) that does
@@ -764,10 +762,10 @@ function USAGE {
 		        properties of the options in play.
 
 		    command parameter:
-		        A command parameter is a string passes as an argument that acts as an
+		        A command parameter is a string passed as an argument that acts as an
 		        input to the command. It may be any string of non-null Unicode
 		        characters. An argument is parsed as a command parameter under two
-		        conditions: (1) a previous argument was the option '--'; or (2) the
+		        conditions: (1) an earlier argument was the option '--'; or (2) the
 		        argument either does not begin with a hyphen or is only a hyphen, and it
 		        does not immediately follow an option that accepts an argument. Thus, if
 		        one wishes a string with over one character that begins with a hyphen to
@@ -840,18 +838,19 @@ function USAGE {
 	EOF
 }
 
-function EXTRACT-ARGS-RETURN-TRAP {
-	unset -f invalid-input opt-fail fail internal-fail
-	unset -f BRIEF-USAGE USAGE EXTRACT-ARGS-RETURN-TRAP main
+function extract-args::EXTRACT-ARGS-RETURN-TRAP {
+	printf -- '%s\n' 'Returning...' 1>&2
+	unset -f extract-args::{invalid-input,opt-fail,fail,internal-fail}
+	unset -f extract-args::{BRIEF-USAGE,USAGE,EXTRACT-ARGS-RETURN-TRAP,main}
+	eval -- "${BASH_OPT_SHOPT_START}"
+	eval -- "${BASH_OPT_SET_START}"    # 'cause of -T
 	# I know eval is usually bad, but this should be okay since these strings
 	# were specifically created and sanitized by bash to be used as input.
-	trap - {1..31} {34..64} EXIT DEBUG RETURN ERR;trap '' RETURN; eval -- "${BASH_TRAP_START}"
+	trap -- - {1..64} EXIT DEBUG RETURN ERR
+	eval -- "${BASH_TRAP_START}"
 #	printf -- '\n%s\n%s\n%s\n\n' 'Resetting... ' "'${BASH_OPT_SHOPT_START}'" "'${BASH_OPT_SET_START}'" 1>&2
-	eval -- "${BASH_OPT_SHOPT_START}"
-	eval -- "${BASH_OPT_SET_START}"
 	unset BASH_TRAP_START BASH_OPT_SHOPT_START BASH_OPT_SET_START
 }
 
-trap EXTRACT-ARGS-RETURN-TRAP RETURN    # should apply to this script itself when sourced
-
-main "$@"
+set +T    # Nobody inside the main function will be able to access the return trap. Main, I believe, will.
+extract-args::main "$@"
